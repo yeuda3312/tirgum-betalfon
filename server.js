@@ -1,13 +1,13 @@
 import express from "express";
 
 const app = express();
-
 app.use(express.json({ limit: "32kb" }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 
 const PORT = process.env.PORT || 3000;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const API_SECRET = process.env.API_SECRET;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
 const LANGUAGES = {
   he: "Hebrew",
@@ -28,31 +28,17 @@ function authorized(req) {
     req.body?.key;
 
   return Boolean(
-    API_SECRET &&
-    supplied &&
-    supplied === API_SECRET
+    API_SECRET && supplied && supplied === API_SECRET
   );
 }
 
-app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "yemot-translator"
-  });
-});
-
 async function translate(text, source, target) {
-  if (!GROQ_API_KEY) {
-    throw new Error("Missing GROQ_API_KEY");
-  }
-
+  if (!GROQ_API_KEY) throw new Error("Missing GROQ_API_KEY");
   if (!LANGUAGES[source] || !LANGUAGES[target]) {
     throw new Error("Unsupported language");
   }
 
-  if (source === target) {
-    return text;
-  }
+  if (source === target) return text;
 
   const response = await fetch(
     "https://api.groq.com/openai/v1/chat/completions",
@@ -63,105 +49,53 @@ async function translate(text, source, target) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model:
-          process.env.GROQ_MODEL ||
-          "llama-3.3-70b-versatile",
+        model: MODEL,
         messages: [
           {
             role: "system",
             content:
-              `Translate the following text from ${LANGUAGES[source]} ` +
-              `to ${LANGUAGES[target]}. Return only the translation. ` +
-              "Preserve the meaning. For a single word, return its " +
-              "most common translation. If ambiguous, choose the " +
-              "most common meaning."
+              `Translate from ${LANGUAGES[source]} to ${LANGUAGES[target]}. ` +
+              "Return only the translation. Preserve meaning."
           },
-          {
-            role: "user",
-            content: text
-          }
+          { role: "user", content: text }
         ],
         temperature: 0,
-        max_tokens: 400
+        max_tokens: 500
       })
     }
   );
 
   if (!response.ok) {
-    console.error(
-      "Groq request failed:",
-      response.status,
-      await response.text()
-    );
-    throw new Error("Translation provider error");
+    const details = await response.text();
+    console.error("Groq error:", response.status, details);
+    throw new Error(`Groq error ${response.status}`);
   }
 
   const data = await response.json();
-  const result =
-    data.choices?.[0]?.message?.content?.trim();
+  const result = data.choices?.[0]?.message?.content?.trim();
 
-  if (!result) {
-    throw new Error("Empty translation");
-  }
-
+  if (!result) throw new Error("Empty translation");
   return result;
 }
 
-function yemotTtsResponse(text) {
-  const safeText = String(text)
+function yemotResponse(text) {
+  // Remove characters that may break the response format.
+  const safe = String(text)
     .replace(/[\r\n]/g, " ")
     .replace(/[&=]/g, " ")
     .trim()
     .slice(0, 1200);
 
-  return `id_list_message=t-${safeText}`;
+  return `id_list_message=t-${safe}`;
 }
 
-app.post("/translate", async (req, res) => {
-  if (!authorized(req)) {
-    return res.status(401).json({
-      error: "Unauthorized"
-    });
-  }
-
-  const {
-    text,
-    source = "en",
-    target = "he"
-  } = req.body;
-
-  if (
-    typeof text !== "string" ||
-    !text.trim() ||
-    text.length > 2000
-  ) {
-    return res.status(400).json({
-      error: "Invalid text"
-    });
-  }
-
-  try {
-    const result = await translate(
-      text.trim(),
-      source,
-      target
-    );
-
-    return res.json({
-      ok: true,
-      translation: result
-    });
-  } catch (error) {
-    console.error(error.message);
-
-    return res.status(502).json({
-      error: "Translation failed"
-    });
-  }
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, service: "translator" });
 });
 
 app.all("/yemot", async (req, res) => {
   if (!authorized(req)) {
+    console.error("Yemot authentication failed");
     return res.status(401).type("text/plain")
       .send("Unauthorized");
   }
@@ -171,43 +105,42 @@ app.all("/yemot", async (req, res) => {
     ...(req.method === "POST" ? req.body : {})
   };
 
-  const text = String(params.WORD || "").trim();
-  const source = String(params.SOURCE || "en");
-  const target = String(params.TARGET || "he");
+  // Voice recognition in Yemot is expected in "text".
+  // WORD is supported for compatibility with the old setup.
+  const input = String(params.text ?? params.WORD ?? "").trim();
+  const source = String(params.SOURCE || "he");
+  const target = String(params.TARGET || "en");
 
-  if (!text) {
+  // Do not log the user's spoken text.
+  console.log("Translation request received", {
+    hasText: Boolean(input),
+    source,
+    target
+  });
+
+  if (!input) {
     return res.type("text/plain").send(
-      "id_list_message=t-לא התקבלה מילה לתרגום"
+      "id_list_message=t-לא זוהה דיבור, נסו שוב"
     );
   }
 
-  if (text.length > 2000) {
+  if (input.length > 2000) {
     return res.type("text/plain").send(
       "id_list_message=t-הטקסט ארוך מדי"
     );
   }
 
   try {
-    const result = await translate(
-      text,
-      source,
-      target
-    );
-
+    const result = await translate(input, source, target);
+    return res.type("text/plain").send(yemotResponse(result));
+  } catch (err) {
+    console.error("Translation failed:", err.message);
     return res.type("text/plain").send(
-      yemotTtsResponse(result)
-    );
-  } catch (error) {
-    console.error(error.message);
-
-    return res.type("text/plain").send(
-      "id_list_message=t-אירעה שגיאה בתרגום, נסו שוב"
+      "id_list_message=t-אירעה שגיאה בתרגום"
     );
   }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `Translator server listening on port ${PORT}`
-  );
+  console.log(`Translator listening on ${PORT}`);
 });
