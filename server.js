@@ -106,7 +106,8 @@ app.all("/yemot", async (req, res) => {
   };
   
 console.log("Received parameter names:", Object.keys(params));
-console.log("Voice fields:", {
+console.log("AUDIO value:", String(params.AUDIO ?? "").slice(0, 300));
+  console.log("Voice fields:", {
   text: params.text,
   WORD: params.WORD,
   keys: Object.keys(params).filter(
