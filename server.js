@@ -104,6 +104,15 @@ app.all("/yemot", async (req, res) => {
     ...req.query,
     ...(req.method === "POST" ? req.body : {})
   };
+  
+console.log("Received parameter names:", Object.keys(params));
+console.log("Voice fields:", {
+  text: params.text,
+  WORD: params.WORD,
+  keys: Object.keys(params).filter(
+    k => /text|word|voice|speech/i.test(k)
+  )
+});
 
   // Voice recognition in Yemot is expected in "text".
   // WORD is supported for compatibility with the old setup.
